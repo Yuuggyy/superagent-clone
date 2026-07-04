@@ -1,5 +1,5 @@
-// memory.js — Système de mémoire persistante
-// Stocke les souvenirs long-terme et l'historique des conversations
+// memory.js — Système de mémoire + règles dynamiques
+// Stocke les souvenirs long-terme, les règles custom, et l'historique des conversations
 
 import fs from 'fs';
 import path from 'path';
@@ -8,118 +8,39 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', 'data');
 
-// S'assurer que le dossier data existe
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
 const CONVERSATIONS_FILE = path.join(DATA_DIR, 'conversations.json');
+const RULES_FILE = path.join(DATA_DIR, 'rules.json');
 
-// Mémoire par défaut — les souvenirs importants de Michael
 const DEFAULT_MEMORY = {
   entries: [
-    {
-      id: 1,
-      title: "Projet menu_3d sur GitHub",
-      content: "Le projet 'menu_3d' de Michael gère les commandes et appels de serveurs avec dashboard admin et reset quotidien. Hébergé sur GitHub.",
-      date: "2026-06-26"
-    },
-    {
-      id: 2,
-      title: "Supabase project",
-      content: "Le projet Supabase ID est 'uauiqbjuwmzqunlfierw'.",
-      date: "2026-06-26"
-    },
-    {
-      id: 6,
-      title: "menu_3d fonctionnalités",
-      content: "Le dashboard de menu_3d inclut des fonctions 'Delete All' pour la gestion quotidienne des commandes et appels de serveurs.",
-      date: "2026-06-27"
-    },
-    {
-      id: 13,
-      title: "BISO PEUPLE",
-      content: "Michael est actif dans le groupe politique 'BISO PEUPLE' (RDC) et crée de la documentation politique technique.",
-      date: "2026-06-28"
-    },
-    {
-      id: 22,
-      title: "Photographie 416",
-      content: "Le projet 416 nécessite de l'upscaling 10x régulier pour les photos promotionnelles d'artistes du label.",
-      date: "2026-06-30"
-    },
-    {
-      id: 23,
-      title: "Sandrine Kaseka",
-      content: "Sandrine Kaseka est la personnalité présente dans les posters du Jour de l'Indépendance de Michael.",
-      date: "2026-06-30"
-    },
-    {
-      id: 39,
-      title: "RDC vs Rwanda CIJ",
-      content: "La RDC a déposé une plainte contre le Rwanda à la CIJ pour génocide, torture et discrimination.",
-      date: "2026-07-01"
-    },
-    {
-      id: 49,
-      title: "MyRawApp Architecture",
-      content: "MyRawApp inclut 5 agents IA (Router, RSE, Compliance, Commercial, Accounting), un process KYC 3 niveaux, et l'intégration IllicoCash.",
-      date: "2026-07-01"
-    },
-    {
-      id: 50,
-      title: "iPhone 14 boot loop",
-      content: "L'iPhone 14 de Michael (d27ap) a eu un boot loop. La restauration échouait sur Windows à cause des drivers USB. Solution : Ubuntu Live USB.",
-      date: "2026-07-01"
-    },
-    {
-      id: 55,
-      title: "iPhone 14 specs",
-      content: "iPhone 14 modèle d27ap, SN: X062JN3FNJ, PRODUCT: iPhone14,7. Firmware cible: 23F84.",
-      date: "2026-07-01"
-    },
-    {
-      id: 61,
-      title: "Ubuntu Live environment",
-      content: "Michael a migré vers un environnement Ubuntu Live sur Dell XPS pour résoudre les conflits USB pendant la restauration iPhone.",
-      date: "2026-07-01"
-    },
-    {
-      id: 62,
-      title: "iPhone 14 redémarrages aléatoires",
-      content: "L'iPhone 14 a été restauré par un technicien mais souffre de redémarrages aléatoires (30 sec à 10 min). Batterie déjà remplacée. Crashes plus fréquents sous utilisation active → probablement puce Tristar/Hydra ou nappe earpiece flex. Verrouillage d'activation (compte tiers) — mot de passe connu.",
-      date: "2026-07-04"
-    },
-    {
-      id: 63,
-      title: "OS Portable",
-      content: "Michael découvre le concept d'OS portable (système d'exploitation sur clé USB/disque externe). Intéressé par les possibilités de diagnostic et récupération.",
-      date: "2026-07-01"
-    },
-    {
-      id: 64,
-      title: "Grippe juillet 2026",
-      content: "Michael a eu la grippe le 4 juillet 2026. Traitement au paracétamol.",
-      date: "2026-07-04"
-    },
-    {
-      id: 65,
-      title: "Superagent clone",
-      content: "Michael a créé un clone autonome de Superagent (ce projet) pour avoir un agent IA hébergé sur son infrastructure GitHub, indépendant de Base44.",
-      date: "2026-07-04"
-    }
+    { id: 1, title: "Projet menu_3d sur GitHub", content: "Le projet 'menu_3d' gère les commandes et appels de serveurs avec dashboard admin et reset quotidien.", date: "2026-06-26" },
+    { id: 2, title: "Supabase project", content: "Le projet Supabase ID est 'uauiqbjuwmzqunlfierw'.", date: "2026-06-26" },
+    { id: 6, title: "BISO PEUPLE", content: "Michael est actif dans le groupe politique 'BISO PEUPLE' (RDC) et crée de la documentation politique technique.", date: "2026-06-28" },
+    { id: 22, title: "Photographie 416", content: "Le projet 416 nécessite de l'upscaling 10x régulier pour les photos promotionnelles d'artistes.", date: "2026-06-30" },
+    { id: 23, title: "Sandrine Kaseka", content: "Sandrine Kaseka est la personnalité présente dans les posters du Jour de l'Indépendance.", date: "2026-06-30" },
+    { id: 39, title: "RDC vs Rwanda CIJ", content: "La RDC a déposé une plainte contre le Rwanda à la CIJ pour génocide, torture et discrimination.", date: "2026-07-01" },
+    { id: 49, title: "MyRawApp Architecture", content: "MyRawApp : 5 agents IA (Router, RSE, Compliance, Commercial, Accounting), KYC 3 niveaux, IllicoCash.", date: "2026-07-01" },
+    { id: 50, title: "iPhone 14 boot loop", content: "iPhone 14 (d27ap) restauré par technicien mais redémarrages aléatoires. Probable Tristar/Hydra.", date: "2026-07-04" },
+    { id: 65, title: "Superagent clone", content: "Michael a créé un clone autonome de Superagent (ce projet) sur son GitHub.", date: "2026-07-04" }
   ]
 };
 
-// Charger la mémoire
+const DEFAULT_RULES = {
+  rules: []
+};
+
+// === MÉMOIRE ===
+
 export function loadMemory() {
   try {
     if (fs.existsSync(MEMORY_FILE)) {
-      const data = fs.readFileSync(MEMORY_FILE, 'utf-8');
-      return JSON.parse(data);
+      return JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf-8'));
     }
-    // Première fois : écrire la mémoire par défaut
     fs.writeFileSync(MEMORY_FILE, JSON.stringify(DEFAULT_MEMORY, null, 2));
     return DEFAULT_MEMORY;
   } catch (error) {
@@ -128,7 +49,6 @@ export function loadMemory() {
   }
 }
 
-// Sauvegarder la mémoire
 export function saveMemory(memory) {
   try {
     fs.writeFileSync(MEMORY_FILE, JSON.stringify(memory, null, 2));
@@ -139,45 +59,89 @@ export function saveMemory(memory) {
   }
 }
 
-// Ajouter un souvenir
 export function addMemoryEntry(title, content) {
   const memory = loadMemory();
   const maxId = Math.max(...memory.entries.map(e => e.id), 0);
-  const newEntry = {
-    id: maxId + 1,
-    title,
-    content,
-    date: new Date().toISOString().split('T')[0]
-  };
+  const newEntry = { id: maxId + 1, title, content, date: new Date().toISOString().split('T')[0] };
   memory.entries.push(newEntry);
   saveMemory(memory);
   return newEntry;
 }
 
-// Charger les conversations
+export function getMemoryContext() {
+  const memory = loadMemory();
+  return memory.entries.slice(-10).map(e => `[${e.date}] ${e.title}: ${e.content}`).join('\n');
+}
+
+// === RÈGLES DYNAMIQUES ===
+
+export function loadRules() {
+  try {
+    if (fs.existsSync(RULES_FILE)) {
+      return JSON.parse(fs.readFileSync(RULES_FILE, 'utf-8'));
+    }
+    fs.writeFileSync(RULES_FILE, JSON.stringify(DEFAULT_RULES, null, 2));
+    return DEFAULT_RULES;
+  } catch (error) {
+    console.error('Erreur chargement règles:', error);
+    return DEFAULT_RULES;
+  }
+}
+
+export function saveRules(rules) {
+  try {
+    fs.writeFileSync(RULES_FILE, JSON.stringify(rules, null, 2));
+    return true;
+  } catch (error) {
+    console.error('Erreur sauvegarde règles:', error);
+    return false;
+  }
+}
+
+export function addRule(content) {
+  const rules = loadRules();
+  const maxId = Math.max(...rules.rules.map(r => r.id), 0);
+  const newRule = { id: maxId + 1, content, date: new Date().toISOString() };
+  rules.rules.push(newRule);
+  saveRules(rules);
+  return newRule;
+}
+
+export function deleteRule(id) {
+  const rules = loadRules();
+  rules.rules = rules.rules.filter(r => r.id !== id);
+  saveRules(rules);
+  return rules;
+}
+
+export function clearRules() {
+  const rules = { rules: [] };
+  saveRules(rules);
+  return rules;
+}
+
+export function getRulesForPrompt() {
+  const rules = loadRules();
+  return rules.rules;
+}
+
+// === CONVERSATIONS ===
+
 export function loadConversations() {
   try {
     if (fs.existsSync(CONVERSATIONS_FILE)) {
-      const data = fs.readFileSync(CONVERSATIONS_FILE, 'utf-8');
-      return JSON.parse(data);
+      return JSON.parse(fs.readFileSync(CONVERSATIONS_FILE, 'utf-8'));
     }
     return { conversations: [] };
   } catch (error) {
-    console.error('Erreur chargement conversations:', error);
     return { conversations: [] };
   }
 }
 
-// Sauvegarder une conversation
 export function saveConversation(messages) {
   const data = loadConversations();
-  const conversation = {
-    id: Date.now(),
-    timestamp: new Date().toISOString(),
-    messages
-  };
+  const conversation = { id: Date.now(), timestamp: new Date().toISOString(), messages };
   data.conversations.push(conversation);
-  // Garder seulement les 100 dernières conversations
   if (data.conversations.length > 100) {
     data.conversations = data.conversations.slice(-100);
   }
@@ -189,9 +153,76 @@ export function saveConversation(messages) {
   return conversation;
 }
 
-// Récupérer le contexte de mémoire pour l'inclure dans le prompt
-export function getMemoryContext() {
-  const memory = loadMemory();
-  const recentEntries = memory.entries.slice(-10); // 10 derniers souvenirs
-  return recentEntries.map(e => `[${e.date}] ${e.title}: ${e.content}`).join('\n');
+// === PARSING DES COMMANDES SLASH ===
+
+export function parseSlashCommand(message) {
+  if (!message.startsWith('/')) return null;
+
+  const trimmed = message.trim();
+
+  // /rule: <texte> — ajouter une règle
+  if (trimmed.match(/^\/rule:\s*(.+)/i)) {
+    const content = trimmed.match(/^\/rule:\s*(.+)/i)[1].trim();
+    if (content) {
+      const rule = addRule(content);
+      return { type: 'rule_added', rule, response: `✅ Règle ajoutée (#${rule.id}): "${content}"` };
+    }
+  }
+
+  // /rules — lister les règles
+  if (trimmed.match(/^\/rules$/i)) {
+    const rules = loadRules();
+    if (rules.rules.length === 0) {
+      return { type: 'rules_list', response: '📋 Aucune règle définie. Tu es libre. Utilise /rule: <texte> pour en ajouter une.' };
+    }
+    const list = rules.rules.map(r => `${r.id}. ${r.content}`).join('\n');
+    return { type: 'rules_list', response: `📋 Règles actuelles:\n${list}` };
+  }
+
+  // /delrule: <id> — supprimer une règle
+  if (trimmed.match(/^\/delrule:\s*(\d+)/i)) {
+    const id = parseInt(trimmed.match(/^\/delrule:\s*(\d+)/i)[1]);
+    deleteRule(id);
+    return { type: 'rule_deleted', response: `🗑️ Règle #${id} supprimée.` };
+  }
+
+  // /clearrules — supprimer toutes les règles
+  if (trimmed.match(/^\/clearrules$/i)) {
+    clearRules();
+    return { type: 'rules_cleared', response: '🗑️ Toutes les règles ont été supprimées. Retour à la liberté totale.' };
+  }
+
+  // /memory — voir la mémoire
+  if (trimmed.match(/^\/memory$/i)) {
+    const memory = loadMemory();
+    const list = memory.entries.map(e => `[${e.date}] ${e.title}: ${e.content}`).join('\n');
+    return { type: 'memory_list', response: `🧠 Mémoire:\n${list}` };
+  }
+
+  // /remember: <texte> — ajouter un souvenir
+  if (trimmed.match(/^\/remember:\s*(.+)/i)) {
+    const content = trimmed.match(/^\/remember:\s*(.+)/i)[1].trim();
+    if (content) {
+      const entry = addMemoryEntry("Souvenir manuel", content);
+      return { type: 'memory_added', response: `✅ Souvenir ajouté: "${content}"` };
+    }
+  }
+
+  // /help — aide sur les commandes
+  if (trimmed.match(/^\/help$/i)) {
+    return {
+      type: 'help',
+      response: `🔧 Commandes disponibles:
+
+/rule: <texte> — Ajouter une règle
+/rules — Voir toutes les règles
+/delrule: <id> — Supprimer une règle
+/clearrules — Supprimer toutes les règles
+/memory — Voir la mémoire
+/remember: <texte> — Ajouter un souvenir
+/help — Cette aide`
+    };
+  }
+
+  return null;
 }
