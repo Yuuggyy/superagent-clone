@@ -17,7 +17,9 @@ export default function App() {
 
   useEffect(() => {
     const saved = localStorage.getItem('chat_messages');
-    if (saved) setMessages(JSON.parse(saved));
+    if (saved) {
+      try { setMessages(JSON.parse(saved)); } catch { setMessages([]); }
+    }
     fetchRulesCount();
     fetchScripts();
   }, []);
@@ -28,29 +30,20 @@ export default function App() {
   }, [messages]);
 
   const fetchRulesCount = async () => {
-    try {
-      const res = await fetch('/api/rules');
-      const data = await res.json();
-      setRules(data.rules || []);
-      setRulesCount(data.rules?.length || 0);
-    } catch {}
+    try { const res = await fetch('/api/rules'); const data = await res.json(); setRules(data.rules || []); setRulesCount(data.rules?.length || 0); } catch {}
   };
-
   const fetchMemory = async () => {
     try { const res = await fetch('/api/memory'); const data = await res.json(); setMemory(data.entries || []); } catch {}
   };
-
   const fetchRules = async () => {
     try { const res = await fetch('/api/rules'); const data = await res.json(); setRules(data.rules || []); setRulesCount(data.rules?.length || 0); } catch {}
   };
-
   const fetchScripts = async () => {
     try { const res = await fetch('/api/scripts'); const data = await res.json(); setScripts(data.scripts || []); } catch {}
   };
 
   const sendMessage = async () => {
     if (!input.trim() || loading) return;
-
     const userMessage = { role: 'user', content: input.trim() };
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
@@ -67,13 +60,21 @@ export default function App() {
         })
       });
 
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: 'Erreur serveur' }));
+        setMessages([...newMessages, { role: 'assistant', content: `⚠️ ${errData.error || 'Erreur'}` }]);
+        setLoading(false);
+        return;
+      }
+
       const data = await res.json();
 
       if (data.error) {
         setMessages([...newMessages, { role: 'assistant', content: `⚠️ ${data.error}` }]);
       } else {
-        const reply = data.reply;
-        setMessages([...newMessages, { role: 'assistant', content: reply }]);
+        const assistantMsg = { role: 'assistant', content: data.reply };
+        if (data.image) assistantMsg.image = data.image;
+        setMessages([...newMessages, assistantMsg]);
         if (data.isCommand && ['rule_added', 'rule_deleted', 'rules_cleared'].includes(data.commandType)) {
           fetchRulesCount();
         }
@@ -146,10 +147,7 @@ export default function App() {
                 rules.map(r => (
                   <div key={r.id} className="list-item">
                     <div className="list-item-text">{r.content}</div>
-                    <button className="delete-btn" onClick={async () => {
-                      await fetch(`/api/rules/${r.id}`, { method: 'DELETE' });
-                      fetchRules();
-                    }}>✕</button>
+                    <button className="delete-btn" onClick={async () => { await fetch(`/api/rules/${r.id}`, { method: 'DELETE' }); fetchRules(); }}>✕</button>
                   </div>
                 ))
               )}
@@ -168,9 +166,7 @@ export default function App() {
             <div className="modal-list">
               <div className="list-item-title" style={{marginBottom: '8px'}}>Tools intégrés:</div>
               <div className="list-item">
-                <div className="list-item-text">
-                  run_bash, read_file, write_file, list_files, web_search, run_script, list_scripts, install_package, github_tool, write_and_run
-                </div>
+                <div className="list-item-text">run_bash, read_file, write_file, list_files, web_search, run_script, github_tool, write_and_run, install_package</div>
               </div>
               <div className="list-item-title" style={{marginTop: '12px', marginBottom: '8px'}}>Scripts:</div>
               {scripts.map(s => (
@@ -194,9 +190,7 @@ export default function App() {
               <button onClick={() => setShowMemory(false)}>✕</button>
             </div>
             <div className="modal-list">
-              {memory.length === 0 ? (
-                <p className="empty">Aucun souvenir</p>
-              ) : (
+              {memory.length === 0 ? (<p className="empty">Aucun souvenir</p>) : (
                 memory.map(entry => (
                   <div key={entry.id} className="list-item">
                     <div>
@@ -218,15 +212,18 @@ export default function App() {
             <div className="welcome-icon">👻</div>
             <h2>Salut Michael 👊</h2>
             <p>Agent autonome — sans limites, avec tools et scripts.</p>
-            <p className="welcome-hint">Essaie: "liste mes repos GitHub" ou "infos système"</p>
+            <p className="welcome-hint">Essaie: "génère une image de..." ou "mes repos GitHub"</p>
           </div>
         )}
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role}`}>
             <div className="message-content">
-              {msg.content.split('\n').map((line, j) => (
+              {msg.content && msg.content.split('\n').map((line, j) => (
                 <p key={j}>{line}</p>
               ))}
+              {msg.image && (
+                <img src={msg.image} alt="Générée" className="chat-image" />
+              )}
             </div>
           </div>
         ))}

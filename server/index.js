@@ -1,5 +1,4 @@
 // index.js — Serveur Express principal
-// Multi-provider LLM + tools exécutables + GitHub + scripts + commandes slash
 
 import express from 'express';
 import cors from 'cors';
@@ -24,67 +23,73 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
-// === NETTOYEUR DE RÉPONSE ===
-// Supprime les tool calls écrits en texte par le LLM (Llama fait ça parfois)
+// === NETTOYEUR ===
 
 const TOOL_NAMES = TOOLS.map(t => t.function.name);
 const TOOL_PATTERNS = [
-  // tool_name(args) — ex: web_search(query="..."), run_bash("...")
   new RegExp(`^\\s*(${TOOL_NAMES.join('|')})\\s*\\(`, 'im'),
-  // ```tool_name ou ```web_search
   /```\s*(web_search|run_bash|read_file|write_file|list_files|run_script|list_scripts|install_package|github_tool|write_and_run)/gi,
-  // "Je vais utiliser le tool..."
-  /^je vais (utiliser|exécuter|lancer|appeler)\s/i,
-  /^je vais vérifier/i,
-  /^je vais chercher/i,
-  /^je vais d'abord/i,
-  /^je vais lire/i,
-  /^je vais écrire/i,
-  /^je vais exécuter/i,
+  /^je vais (utiliser|exécuter|lancer|appeler|vérifier|chercher|lire|écrire|d'abord)/i,
   /^laissez-moi (utiliser|exécuter|chercher|vérifier|lancer)/i,
   /^let me (use|run|search|check|call|try)/i,
   /^i (will|'ll) (use|run|search|check|call)/i,
 ];
 
 function cleanReply(text) {
-  if (!text) return text;
-
+  if (!text) return '';
   let lines = text.split('\n');
   let cleaned = [];
-
   for (let line of lines) {
     const trimmed = line.trim();
-
-    // Skip les lignes qui ressemblent à des tool calls
-    const isToolCall = TOOL_PATTERNS.some(pattern => pattern.test(trimmed));
-
-    if (isToolCall) {
-      continue; // on saute cette ligne
-    }
-
-    // Skip les lignes qui sont juste un tool name entre backticks
-    if (/^`?(web_search|run_bash|read_file|write_file|list_files|run_script|github_tool|write_and_run)`?\s*$/i.test(trimmed)) {
-      continue;
-    }
-
-    // Skip les blocks de code qui contiennent des tool calls
-    if (/^```/.test(trimmed)) {
-      // Vérifier si c'est un block de tool call
-      const isToolBlock = TOOL_NAMES.some(name => trimmed.toLowerCase().includes(name));
-      if (isToolBlock) {
-        continue;
-      }
-    }
-
+    if (TOOL_PATTERNS.some(p => p.test(trimmed))) continue;
+    if (/^`?(web_search|run_bash|read_file|write_file|list_files|run_script|github_tool|write_and_run)`?\s*$/i.test(trimmed)) continue;
     cleaned.push(line);
   }
+  return cleaned.join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n').trim();
+}
 
-  let result = cleaned.join('\n');
+// === DÉTECTION D'IMAGE ===
 
-  // Nettoyer les espaces multiples et lignes vides au début
-  result = result.replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n').trim();
+function isImageRequest(message) {
+  const lower = message.toLowerCase();
+  const triggers = [
+    'génère une image', 'genere une image', 'générer une image', 'generer une image',
+    'crée une image', 'cree une image', 'créer une image', 'creer une image',
+    'dessine', 'draw ', 'image de', 'photo de', 'génère un', 'genere un',
+    'génère moi', 'genere moi', 'fait une image', 'crée un logo',
+    'génération d\'image', 'generation d\'image', 'génère une photo',
+    'image:', 'génère', 'genere', 'dessine-moi', 'dessine moi',
+    'crée une illustration', 'fais une image', 'faire une image'
+  ];
+  return triggers.some(t => lower.includes(t));
+}
 
-  return result;
+function extractImagePrompt(message) {
+  // Extraire le prompt de l'image depuis le message
+  let prompt = message;
+  const patterns = [
+    /gén[èe]re??\s*(une\s*)?image\s*(de\s*)?(.+)/i,
+    /gén[èe]re??\s*(une\s*)?photo\s*(de\s*)?(.+)/i,
+    /gén[èe]re?\s*moi\s+(.+)/i,
+    /cr[ée]e?\s*(une\s*)?image\s*(de\s*)?(.+)/i,
+    /cr[ée]er?\s*(une\s*)?image\s*(de\s*)?(.+)/i,
+    /dessine[-\s]moi\s+(.+)/i,
+    /dessine\s+(.+)/i,
+    /fait\s+une\s+image\s+(de\s*)?(.+)/i,
+    /fais\s+une\s+image\s+(de\s*)?(.+)/i,
+    /image\s*:\s*(.+)/i,
+    /gén[èe]re?\s+(.+)/i,
+    /cr[ée]e?\s+un\s+logo\s+(.+)/i,
+    /cr[ée]e?\s+une\s+illustration\s+(de\s*)?(.+)/i,
+  ];
+  for (const p of patterns) {
+    const match = message.match(p);
+    if (match) {
+      prompt = match[match.length - 1].trim();
+      break;
+    }
+  }
+  return prompt;
 }
 
 // === HEALTH ===
@@ -118,10 +123,20 @@ app.post('/api/chat', async (req, res) => {
       return res.json({ reply: command.response, isCommand: true, commandType: command.type });
     }
 
-    // 2. Préparer le LLM
+    // 2. IMAGE? → générer directement
+    if (isImageRequest(message)) {
+      const prompt = extractImagePrompt(message);
+      const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
+      const reply = `Image générée pour: "${prompt}"`;
+      const fullConv = [...history, { role: 'user', content: message }, { role: 'assistant', content: reply, image: imageUrl }];
+      saveConversation(fullConv);
+      return res.json({ reply, image: imageUrl, provider: 'pollinations' });
+    }
+
+    // 3. Préparer le LLM
     const { client, provider, error: llmError } = createLLMClient();
     if (!client || llmError) {
-      return res.status(500).json({ error: llmError || 'Aucun provider', type: 'config_error' });
+      return res.status(500).json({ error: llmError || 'Aucun provider. Ajoute GROQ_API_KEY dans .env', type: 'config_error' });
     }
 
     const model = process.env.OPENAI_MODEL || provider.defaultModel;
@@ -137,14 +152,11 @@ app.post('/api/chat', async (req, res) => {
       { role: 'user', content: message }
     ];
 
-    // 3. Appel LLM avec tools
+    // 4. Appel LLM
     let completion;
     try {
       const params = {
-        model,
-        messages,
-        max_tokens: 4000,
-        temperature: 0.7,
+        model, messages, max_tokens: 4000, temperature: 0.7,
         tool_choice: provider.supportsTools ? 'auto' : undefined,
         tools: provider.supportsTools ? TOOLS : undefined,
       };
@@ -154,7 +166,7 @@ app.post('/api/chat', async (req, res) => {
         completion = await client.chat.completions.create({ model, messages, max_tokens: 4000, temperature: 0.7 });
       } catch (retryErr) {
         return res.status(500).json({
-          error: retryErr.status === 401 ? `Clé API invalide pour ${provider.name}` : retryErr.message,
+          error: retryErr.status === 401 ? `Clé API invalide pour ${provider.name}. Vérifie ${provider.apiKeyEnv} dans .env` : `Erreur API: ${retryErr.message}`,
           type: 'api_error', provider: provider.key, model
         });
       }
@@ -163,34 +175,25 @@ app.post('/api/chat', async (req, res) => {
     let reply = completion.choices[0]?.message?.content || '';
     const toolCalls = completion.choices[0]?.message?.tool_calls;
 
-    // 4. Exécuter les tools
+    // 5. Tool calls
     if (toolCalls && toolCalls.length > 0) {
       messages.push(completion.choices[0].message);
-
       for (const toolCall of toolCalls) {
         const toolName = toolCall.function.name;
         let toolArgs = {};
         try { toolArgs = JSON.parse(toolCall.function.arguments); } catch {}
-
         const result = await executeTool(toolName, toolArgs);
-        messages.push({
-          role: 'tool',
-          tool_call_id: toolCall.id,
-          content: JSON.stringify(result)
-        });
+        messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify(result) });
       }
-
       try {
-        const secondCompletion = await client.chat.completions.create({
-          model, messages, max_tokens: 4000, temperature: 0.7
-        });
+        const secondCompletion = await client.chat.completions.create({ model, messages, max_tokens: 4000, temperature: 0.7 });
         reply = secondCompletion.choices[0]?.message?.content || '';
       } catch (err) {
-        reply = `Action exécutée mais erreur lors de la synthèse: ${err.message}`;
+        reply = `Action exécutée. Erreur synthèse: ${err.message}`;
       }
     }
 
-    // 5. Auto-execution si LLM n'a pas trigger les tools
+    // 6. Auto-execution
     if (!toolCalls && shouldAutoExecute(message)) {
       const autoResult = await autoExecute(message);
       if (autoResult) {
@@ -198,18 +201,18 @@ app.post('/api/chat', async (req, res) => {
       }
     }
 
-    // 6. NETTOYER la réponse — enlever les tool calls écrits en texte
+    // 7. Nettoyer
     reply = cleanReply(reply);
-
-    if (!reply || reply.length < 2) reply = 'Action effectuée. Que veux-tu d\'autre ?';
+    if (!reply || reply.length < 2) reply = 'C\'est fait. Autre chose ?';
 
     const fullConv = [...history, { role: 'user', content: message }, { role: 'assistant', content: reply }];
     saveConversation(fullConv);
 
     res.json({ reply, provider: provider.key, model, usedTools: !!toolCalls });
   } catch (error) {
-    console.error('Erreur:', error);
-    res.status(500).json({ error: `Erreur serveur: ${error.message}`, type: 'server_error' });
+    console.error('Erreur chat:', error);
+    // Toujours renvoyer du JSON valide
+    res.status(500).json({ error: `Erreur: ${error.message}`, type: 'server_error' });
   }
 });
 
@@ -233,26 +236,20 @@ function shouldAutoExecute(message) {
 
 async function autoExecute(message) {
   const lower = message.toLowerCase();
-
   try {
     if (lower.includes('liste les fichiers') || lower.includes('list files') || lower.includes('montre les fichiers')) {
       const result = await executeTool('list_files', { path: '.' });
       return { output: result.files || result.error };
     }
-
     if (lower.includes('mes repos') || lower.includes('liste mes repos') || (lower.includes('github') && lower.includes('repo'))) {
       const result = await executeTool('github_tool', { action: 'list_repos' });
-      if (result.success) {
-        return { output: result.repos.map(r => `${r.name} (${r.language || '?'}, ⭐${r.stars})`).join('\n') };
-      }
+      if (result.success) return { output: result.repos.map(r => `${r.name} (${r.language || '?'}, ⭐${r.stars})`).join('\n') };
       return { output: result.error };
     }
-
     if (lower.includes('infos système') || lower.includes('system info')) {
       const result = await executeTool('run_script', { name: 'system-info' });
       return { output: result.stdout || result.error };
     }
-
     if (lower.includes('ping ')) {
       const host = message.split(/ping\s+/i)[1]?.trim().split(/\s+/)[0];
       if (host) {
@@ -260,7 +257,6 @@ async function autoExecute(message) {
         return { output: result.stdout || result.error };
       }
     }
-
     if (lower.includes('port') && lower.includes('scan')) {
       const ip = message.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
       if (ip) {
@@ -268,40 +264,29 @@ async function autoExecute(message) {
         return { output: result.stdout || result.error };
       }
     }
-
     if (lower.includes('connecte à github') || lower.includes('github user') || lower.includes('mon profil github')) {
       const result = await executeTool('github_tool', { action: 'get_user' });
-      if (result.success) {
-        return { output: `User: ${result.user.login}\nName: ${result.user.name}\nRepos: ${result.user.repos}\nFollowers: ${result.user.followers}` };
-      }
+      if (result.success) return { output: `User: ${result.user.login}\nName: ${result.user.name}\nRepos: ${result.user.repos}\nFollowers: ${result.user.followers}` };
       return { output: result.error };
     }
-
     if (lower.includes('crée un repo') || lower.includes('create repo')) {
-      const name = message.match(/repo[:\s]+([\w-]+)/i)?.[1] || message.match(/appel[ée]?\s+([\w-]+)/i)?.[1];
+      const name = message.match(/repo[:\s]+([\w-]+)/i)?.[1];
       if (name) {
         const result = await executeTool('github_tool', { action: 'create_repo', repo: name });
         return { output: result.success ? `Repo créé: ${result.url}` : result.error };
       }
     }
-
     if (lower.includes('actualités') || lower.includes('news') || lower.includes('cherche') || lower.includes('recherche')) {
       let query = message;
       if (lower.includes('actualités')) query = 'actualités du jour';
-      else if (lower.startsWith('cherche')) query = message.replace(/^cherche\s*/i, '');
-      else if (lower.startsWith('recherche')) query = message.replace(/^recherche\s*/i, '');
-
+      else query = message.replace(/^(cherche|recherche)\s*/i, '');
       const result = await executeTool('web_search', { query });
-      if (result.success) {
-        return { output: result.results?.slice(0, 4000) || result.content?.slice(0, 4000) || 'Aucun résultat' };
-      }
+      if (result.success) return { output: (result.results || result.content || 'Aucun résultat').slice(0, 4000) };
       return { output: result.error };
     }
-
   } catch (err) {
-    return { output: err.message };
+    return { output: `Erreur: ${err.message}` };
   }
-
   return null;
 }
 
@@ -337,12 +322,12 @@ app.post('/api/tools/:toolName', async (req, res) => {
 // === CONVERSATIONS ===
 app.get('/api/conversations', (req, res) => { res.json(loadConversations()); });
 
-// === IMAGES ===
+// === IMAGE ENDPOINT ===
 app.post('/api/image', async (req, res) => {
   try {
     const { prompt } = req.body;
     if (!prompt) return res.status(400).json({ error: 'Prompt requis' });
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`;
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true&seed=${Date.now()}`;
     res.json({ url, provider: 'pollinations (free)' });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -359,9 +344,7 @@ app.listen(PORT, () => {
   const rules = loadRules();
   const scripts = listAvailableScripts();
   const github = !!process.env.GITHUB_TOKEN?.trim();
-
   console.log(`\n👻 Superagent Clone — http://localhost:${PORT}\n`);
-
   if (provider?.error) {
     console.log('⚠️  ERREUR CONFIG LLM:');
     console.log(provider.error);
