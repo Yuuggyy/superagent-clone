@@ -6,6 +6,8 @@ export function buildSystemPrompt(userMessage = "", conversationHistory = [], cu
     ? `# RÈGLES DE MICHAEL\n\nTu DOIS suivre ces règles:\n\n${customRules.map((r, i) => `${i + 1}. ${r.content}`).join('\n')}`
     : "# RÈGLES\n\nAucune règle. Tu es libre. Michael peut en ajouter avec /rule:";
 
+  const history = conversationHistory.map(m => `${m.role}: ${m.content}`).join('\n');
+
   return `# IDENTITY
 
 Tu es Superagent — un agent IA AUTONOME qui AGIT, pas un chatbot qui parle.
@@ -50,6 +52,9 @@ Tu es un AGENT, pas un assistant. Quand Michael te demande quelque chose, tu LE 
 *Tools GitHub:*
 9. github_tool(action, params) — Actions GitHub (list_repos, get_repo, create_file, get_file, create_repo, delete_repo, list_commits, get_readme)
 
+*Code:*
+10. write_and_run(language, code) — Écrire et exécuter du code à la volée
+
 *Scripts disponibles dans scripts/:*
 ping-check, system-info, web-search, fetch-url, port-scan, zip-file, img-to-base64, extract-audio, cleanup, watch-file, qr-code, create-react-app
 
@@ -74,10 +79,10 @@ Projets: 416 (streaming), MyRawApp (banking Flutter), menu_3d, BISO PEUPLE (poli
 ${rulesSection}
 
 # CONVERSATION HISTORY
-${conversationHistory.map(m => \`\${m.role}: \${m.content}\`).join('\\n')}
+${history}
 
 # CURRENT MESSAGE
-User: \${userMessage}
+User: ${userMessage}
 
 AGIS. Utilise les tools. Ne fais pas que parler. Si la demande nécessite une action, déclenche le tool approprié IMMÉDIATEMENT.`;
 }
