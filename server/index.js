@@ -1,5 +1,5 @@
 // index.js — Serveur Express principal
-// Multi-provider LLM + tools/scripts + commandes slash + mémoire
+// Multi-provider LLM + tools exécutables + GitHub + scripts + commandes slash
 
 import express from 'express';
 import cors from 'cors';
@@ -24,81 +24,49 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, '..', 'dist')));
 
-// === HEALTH (avec diagnostic) ===
-
+// === HEALTH ===
 app.get('/api/health', (req, res) => {
   const provider = getActiveProvider();
-  const rules = loadRules();
-  const memory = loadMemory();
-  const scripts = listAvailableScripts();
   res.json({
     status: provider?.error ? 'error' : 'ok',
-    provider: provider ? {
-      key: provider.key,
-      name: provider.name,
-      model: process.env.OPENAI_MODEL || provider.defaultModel,
-      free: provider.free,
-      hasKey: !!provider.apiKey,
-      error: provider.error || null
-    } : { error: 'Aucun provider' },
-    rulesCount: rules.rules.length,
-    memoryCount: memory.entries.length,
-    scriptsCount: scripts.length,
+    provider: provider ? { name: provider.name, model: process.env.OPENAI_MODEL || provider.defaultModel, hasKey: !!provider.apiKey, error: provider.error } : null,
+    github: { configured: !!process.env.GITHUB_TOKEN?.trim() },
     toolsCount: TOOLS.length,
-    envKeys: {
-      GROQ_API_KEY: process.env.GROQ_API_KEY ? ` configuré (${process.env.GROQ_API_KEY.slice(0, 6)}...)` : ' MANQUANT',
-      OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY ? 'configuré' : 'manquant',
-      OPENAI_API_KEY: process.env.OPENAI_API_KEY ? 'configuré' : 'manquant',
-      LLM_PROVIDER: process.env.LLM_PROVIDER || 'non défini (auto-détection)'
-    }
+    scriptsCount: listAvailableScripts().length
   });
 });
-
-// === PROVIDERS ===
 
 app.get('/api/providers', (req, res) => {
   res.json({ providers: listProviders(), active: getActiveProvider() });
 });
 
-// === CHAT ===
+// === CHAT avec tools + auto-détection d'intent ===
 
 app.post('/api/chat', async (req, res) => {
   try {
     const { message, history = [] } = req.body;
-
     if (!message) return res.status(400).json({ error: 'Message requis' });
 
     // 1. Commande slash?
     const command = parseSlashCommand(message);
     if (command) {
-      const fullConversation = [
-        ...history,
-        { role: 'user', content: message },
-        { role: 'assistant', content: command.response }
-      ];
-      saveConversation(fullConversation);
+      const fullConv = [...history, { role: 'user', content: message }, { role: 'assistant', content: command.response }];
+      saveConversation(fullConv);
       return res.json({ reply: command.response, isCommand: true, commandType: command.type });
     }
 
-    // 2. Message normal → LLM
+    // 2. Préparer le LLM
     const { client, provider, error: llmError } = createLLMClient();
-
     if (!client || llmError) {
-      // Erreur claire avec instructions
-      return res.status(500).json({
-        error: llmError || 'Aucun provider LLM configuré',
-        type: 'config_error',
-        hint: 'Vérifie ton fichier .env. Va sur /api/health pour le diagnostic.'
-      });
+      return res.status(500).json({ error: llmError || 'Aucun provider', type: 'config_error' });
     }
 
     const model = process.env.OPENAI_MODEL || provider.defaultModel;
-    const memoryContext = getMemoryContext();
     const customRules = getRulesForPrompt();
+    const memoryContext = getMemoryContext();
     const conversationHistory = history.map(m => ({ role: m.role, content: m.content }));
 
-    const basePrompt = buildSystemPrompt(message, history, customRules);
-    const fullSystemPrompt = `${basePrompt}\n\n# MÉMOIRE LONG-TERME\n${memoryContext}\n\n# TOOLS\nTu peux exécuter des tools: run_bash, read_file, write_file, list_files, web_search, run_script, list_scripts, install_package.`;
+    const fullSystemPrompt = buildSystemPrompt(message, history, customRules) + '\n\n# MÉMOIRE\n' + memoryContext;
 
     const messages = [
       { role: 'system', content: fullSystemPrompt },
@@ -106,65 +74,26 @@ app.post('/api/chat', async (req, res) => {
       { role: 'user', content: message }
     ];
 
-    // Appel LLM
+    // 3. Appel LLM avec tools
     let completion;
     try {
       const params = {
         model,
         messages,
         max_tokens: 4000,
-        temperature: 0.8,
+        temperature: 0.7,
+        tool_choice: provider.supportsTools ? 'auto' : undefined,
+        tools: provider.supportsTools ? TOOLS : undefined,
       };
-
-      // Tools seulement si le provider les supporte
-      if (provider.supportsTools) {
-        params.tools = TOOLS;
-      }
-
       completion = await client.chat.completions.create(params);
     } catch (apiError) {
-      // Erreur API spécifique — message détaillé
-      let errorMsg = apiError.message;
-
-      // Erreurs courantes
-      if (apiError.status === 401 || apiError.code === 'invalid_api_key') {
-        errorMsg = `Clé API invalide pour ${provider.name}.
-          Ta clé ${provider.apiKeyEnv} est incorrecte ou expirée.
-          Obtiens une nouvelle clé: ${provider.signup}`;
-      } else if (apiError.status === 429) {
-        errorMsg = `Limite de taux atteinte sur ${provider.name}.
-          Attends quelques secondes et réessaie.
-          Si ça persiste, le plan gratuit a ses limites — essaie un autre provider.`;
-      } else if (apiError.status === 404 || errorMsg.includes('model')) {
-        errorMsg = `Modèle "${model}" non trouvé sur ${provider.name}.
-          Vérifie OPENAI_MODEL dans ton .env.
-          Modèles disponibles: ${provider.models.join(', ')}`;
-      } else if (apiError.code === 'ECONNREFUSED' || apiError.code === 'ENOTFOUND') {
-        errorMsg = `Connexion impossible à ${provider.name} (${provider.baseURL}).
-          Vérifie ta connexion internet.`;
-      }
-
-      // Retry sans tools (certains modèles ne supportent pas les tools)
-      if (provider.supportsTools && !errorMsg.includes('invalide') && !errorMsg.includes('401')) {
-        try {
-          completion = await client.chat.completions.create({
-            model, messages, max_tokens: 4000, temperature: 0.8,
-          });
-        } catch (retryError) {
-          return res.status(500).json({
-            error: errorMsg,
-            retryError: retryError.message,
-            type: 'api_error',
-            provider: provider.key,
-            model
-          });
-        }
-      } else {
+      // Retry sans tools
+      try {
+        completion = await client.chat.completions.create({ model, messages, max_tokens: 4000, temperature: 0.7 });
+      } catch (retryErr) {
         return res.status(500).json({
-          error: errorMsg,
-          type: 'api_error',
-          provider: provider.key,
-          model
+          error: retryErr.status === 401 ? `Clé API invalide pour ${provider.name}` : retryErr.message,
+          type: 'api_error', provider: provider.key, model
         });
       }
     }
@@ -172,16 +101,19 @@ app.post('/api/chat', async (req, res) => {
     let reply = completion.choices[0]?.message?.content || '';
     const toolCalls = completion.choices[0]?.message?.tool_calls;
 
-    // 3. Tool calls
+    // 4. Exécuter les tools si le LLM en a demandé
     if (toolCalls && toolCalls.length > 0) {
       messages.push(completion.choices[0].message);
 
+      const toolSummaries = [];
       for (const toolCall of toolCalls) {
         const toolName = toolCall.function.name;
         let toolArgs = {};
         try { toolArgs = JSON.parse(toolCall.function.arguments); } catch {}
 
         const result = await executeTool(toolName, toolArgs);
+        const status = result.success ? '✅' : '❌';
+        toolSummaries.push(`${status} ${toolName}`);
 
         messages.push({
           role: 'tool',
@@ -193,36 +125,113 @@ app.post('/api/chat', async (req, res) => {
       // 2e appel avec résultats
       try {
         const secondCompletion = await client.chat.completions.create({
-          model, messages, max_tokens: 4000, temperature: 0.8,
+          model, messages, max_tokens: 4000, temperature: 0.7
         });
         reply = secondCompletion.choices[0]?.message?.content || '';
       } catch (err) {
-        // Si le 2e appel échoue, on donne quand même les résultats des tools
-        reply = `J'ai exécuté les tools mais la réponse finale a échoué: ${err.message}`;
+        // Si échec, donner au moins les résultats des tools
+        reply = `J'ai exécuté les actions:\n${toolSummaries.join('\n')}\n\nErreur lors de la synthèse: ${err.message}`;
       }
     }
 
-    if (!reply) {
-      reply = 'Réponse vide du modèle. Essaie de reformuler.';
+    // 5. Fallback: si pas de tool calls et le message semble nécessiter une action,
+    // auto-exécuter (Llama peut parfois ne pas trigger les tools)
+    if (!toolCalls && shouldAutoExecute(message)) {
+      const autoResult = await autoExecute(message);
+      if (autoResult) {
+        reply = `${reply}\n\n_🔧 Action auto-exécutée: ${autoResult.summary}_\n\n\`\`\`\n${autoResult.output}\n\`\`\``;
+      }
     }
 
-    const fullConversation = [
-      ...history,
-      { role: 'user', content: message },
-      { role: 'assistant', content: reply }
-    ];
-    saveConversation(fullConversation);
+    if (!reply) reply = 'Réponse vide. Reformule ta question.';
 
-    res.json({ reply, provider: provider.key, model });
+    const fullConv = [...history, { role: 'user', content: message }, { role: 'assistant', content: reply }];
+    saveConversation(fullConv);
+
+    res.json({ reply, provider: provider.key, model, usedTools: !!toolCalls });
   } catch (error) {
-    console.error('Erreur chat (catch global):', error);
-    res.status(500).json({
-      error: `Erreur serveur: ${error.message}`,
-      type: 'server_error',
-      stack: error.stack?.split('\n').slice(0, 5).join('\n')
-    });
+    console.error('Erreur:', error);
+    res.status(500).json({ error: `Erreur serveur: ${error.message}`, type: 'server_error' });
   }
 });
+
+// === AUTO-EXECUTION (fallback si LLM ne trigger pas les tools) ===
+
+function shouldAutoExecute(message) {
+  const lower = message.toLowerCase();
+  const triggers = [
+    'liste les fichiers', 'ls ', 'montre les fichiers', 'list files',
+    'lance le script', 'exécute le script', 'run script',
+    'ping ', 'vérifie la connexion',
+    'infos système', 'system info', 'infos du système',
+    'scanne les ports', 'port scan',
+    'connecte à github', 'mes repos', 'liste mes repos', 'github',
+    'crée un repo', 'create repo'
+  ];
+  return triggers.some(t => lower.includes(t));
+}
+
+async function autoExecute(message) {
+  const lower = message.toLowerCase();
+
+  try {
+    if (lower.includes('liste les fichiers') || lower.includes('list files') || lower.includes('montre les fichiers')) {
+      const result = await executeTool('list_files', { path: '.' });
+      return { summary: 'list_files', output: result.files || result.error };
+    }
+
+    if (lower.includes('mes repos') || lower.includes('liste mes repos') || (lower.includes('github') && lower.includes('repo'))) {
+      const result = await executeTool('github_tool', { action: 'list_repos' });
+      if (result.success) {
+        const output = result.repos.map(r => `${r.name} (${r.language || '?'}, ⭐${r.stars})`).join('\n');
+        return { summary: 'github list_repos', output };
+      }
+      return { summary: 'github list_repos', output: result.error };
+    }
+
+    if (lower.includes('infos système') || lower.includes('system info')) {
+      const result = await executeTool('run_script', { name: 'system-info' });
+      return { summary: 'system-info', output: result.stdout || result.error };
+    }
+
+    if (lower.includes('ping ')) {
+      const host = message.split(/ping\s+/i)[1]?.trim().split(/\s+/)[0];
+      if (host) {
+        const result = await executeTool('run_script', { name: 'ping-check', args: host });
+        return { summary: `ping ${host}`, output: result.stdout || result.error };
+      }
+    }
+
+    if (lower.includes('port') && lower.includes('scan')) {
+      const ip = message.match(/\d+\.\d+\.\d+\.\d+/)?.[0];
+      if (ip) {
+        const result = await executeTool('run_script', { name: 'port-scan', args: ip });
+        return { summary: `port-scan ${ip}`, output: result.stdout || result.error };
+      }
+    }
+
+    if (lower.includes('connecte à github') || lower.includes('github user') || lower.includes('mon profil github')) {
+      const result = await executeTool('github_tool', { action: 'get_user' });
+      if (result.success) {
+        return { summary: 'github get_user', output: `User: ${result.user.login}\nName: ${result.user.name}\nRepos: ${result.user.repos}\nFollowers: ${result.user.followers}` };
+      }
+      return { summary: 'github get_user', output: result.error };
+    }
+
+    if (lower.includes('crée un repo') || lower.includes('create repo')) {
+      const name = message.match(/repo[:\s]+([\w-]+)/i)?.[1] || message.match(/appel[ée]?\s+([\w-]+)/i)?.[1];
+      if (name) {
+        const result = await executeTool('github_tool', { action: 'create_repo', repo: name });
+        return { summary: `create_repo ${name}`, output: result.success ? `Créé: ${result.url}` : result.error };
+      }
+    }
+
+  } catch (err) {
+    return { summary: 'auto-execute error', output: err.message };
+  }
+
+  return null;
+}
 
 // === RÈGLES ===
 app.get('/api/rules', (req, res) => { res.json(loadRules()); });
@@ -242,13 +251,12 @@ app.post('/api/memory', (req, res) => {
   res.json({ success: true, entry: addMemoryEntry(title, content) });
 });
 
-// === SCRIPTS ===
+// === SCRIPTS & TOOLS ===
 app.get('/api/scripts', (req, res) => {
   res.json({ scripts: listAvailableScripts(), tools: TOOLS.map(t => t.function.name) });
 });
 app.post('/api/scripts/run', async (req, res) => {
-  const { name, args } = req.body;
-  res.json(await executeTool('run_script', { name, args }));
+  res.json(await executeTool('run_script', { name: req.body.name, args: req.body.args }));
 });
 app.post('/api/tools/:toolName', async (req, res) => {
   res.json(await executeTool(req.params.toolName, req.body));
@@ -257,15 +265,13 @@ app.post('/api/tools/:toolName', async (req, res) => {
 // === CONVERSATIONS ===
 app.get('/api/conversations', (req, res) => { res.json(loadConversations()); });
 
-// === IMAGES ===
+// === IMAGES (Pollinations gratuit) ===
 app.post('/api/image', async (req, res) => {
   try {
-    const { prompt, size = '1024x1024' } = req.body;
+    const { prompt } = req.body;
     if (!prompt) return res.status(400).json({ error: 'Prompt requis' });
-
-    // Fallback gratuit: Pollinations.ai (toujours, pas besoin de clé)
-    const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`;
-    return res.json({ url: pollinationsUrl, provider: 'pollinations (free)' });
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1024&height=1024&nologo=true`;
+    res.json({ url, provider: 'pollinations (free)' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -279,26 +285,22 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   const provider = getActiveProvider();
   const rules = loadRules();
-  const memory = loadMemory();
   const scripts = listAvailableScripts();
+  const github = !!process.env.GITHUB_TOKEN?.trim();
 
   console.log(`\n👻 Superagent Clone — http://localhost:${PORT}\n`);
 
   if (provider?.error) {
-    console.log('⚠️  ERREUR DE CONFIGURATION:');
-    console.log('─'.repeat(50));
+    console.log('⚠️  ERREUR CONFIG LLM:');
     console.log(provider.error);
-    console.log('─'.repeat(50));
-    console.log('\n💡 Va sur http://localhost:' + PORT + '/api/health pour le diagnostic\n');
   } else if (provider) {
-    console.log(`🤖 Provider: ${provider.name}`);
-    console.log(`📋 Model: ${process.env.OPENAI_MODEL || provider.defaultModel}`);
+    console.log(`🤖 ${provider.name} → ${process.env.OPENAI_MODEL || provider.defaultModel}`);
     console.log(`💰 ${provider.free ? 'GRATUIT' : 'PAYANT'}`);
-    console.log(`🧠 Memory: ${memory.entries.length} entrées`);
-    console.log(`📏 Rules: ${rules.rules.length} (${rules.rules.length === 0 ? 'SANS LIMITES' : 'avec règles'})`);
     console.log(`🔧 Tools: ${TOOLS.length} | Scripts: ${scripts.length}`);
-    console.log(`\n✅ Prêt! Va sur http://localhost:${PORT}\n`);
+    console.log(`📦 GitHub: ${github ? 'connecté' : 'non configuré (ajoute GITHUB_TOKEN dans .env)'}`);
+    console.log(`📏 Rules: ${rules.rules.length} (${rules.rules.length === 0 ? 'SANS LIMITES' : 'avec règles'})`);
+    console.log(`\n✅ Prêt!\n`);
   } else {
-    console.log('⚠️  Aucun provider configuré. Va sur /api/health\n');
+    console.log('⚠️  Aucun provider. Va sur /api/health\n');
   }
 });

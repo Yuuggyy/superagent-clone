@@ -7,9 +7,11 @@ export default function App() {
   const [showMenu, setShowMenu] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [showRules, setShowRules] = useState(false);
+  const [showTools, setShowTools] = useState(false);
   const [memory, setMemory] = useState([]);
   const [rules, setRules] = useState([]);
   const [rulesCount, setRulesCount] = useState(0);
+  const [scripts, setScripts] = useState([]);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -17,6 +19,7 @@ export default function App() {
     const saved = localStorage.getItem('chat_messages');
     if (saved) setMessages(JSON.parse(saved));
     fetchRulesCount();
+    fetchScripts();
   }, []);
 
   useEffect(() => {
@@ -30,24 +33,19 @@ export default function App() {
       const data = await res.json();
       setRules(data.rules || []);
       setRulesCount(data.rules?.length || 0);
-    } catch (err) {}
+    } catch {}
   };
 
   const fetchMemory = async () => {
-    try {
-      const res = await fetch('/api/memory');
-      const data = await res.json();
-      setMemory(data.entries || []);
-    } catch (err) {}
+    try { const res = await fetch('/api/memory'); const data = await res.json(); setMemory(data.entries || []); } catch {}
   };
 
   const fetchRules = async () => {
-    try {
-      const res = await fetch('/api/rules');
-      const data = await res.json();
-      setRules(data.rules || []);
-      setRulesCount(data.rules?.length || 0);
-    } catch (err) {}
+    try { const res = await fetch('/api/rules'); const data = await res.json(); setRules(data.rules || []); setRulesCount(data.rules?.length || 0); } catch {}
+  };
+
+  const fetchScripts = async () => {
+    try { const res = await fetch('/api/scripts'); const data = await res.json(); setScripts(data.scripts || []); } catch {}
   };
 
   const sendMessage = async () => {
@@ -72,25 +70,22 @@ export default function App() {
       const data = await res.json();
 
       if (data.error) {
-        setMessages([...newMessages, { role: 'assistant', content: `Erreur: ${data.error}` }]);
+        setMessages([...newMessages, { role: 'assistant', content: `⚠️ ${data.error}` }]);
       } else {
-        setMessages([...newMessages, { role: 'assistant', content: data.reply }]);
-        // Si c'était une commande de règle, refresh le compteur
-        if (data.isCommand && (data.commandType === 'rule_added' || data.commandType === 'rule_deleted' || data.commandType === 'rules_cleared')) {
+        const reply = data.reply;
+        setMessages([...newMessages, { role: 'assistant', content: reply }]);
+        if (data.isCommand && ['rule_added', 'rule_deleted', 'rules_cleared'].includes(data.commandType)) {
           fetchRulesCount();
         }
       }
     } catch (err) {
-      setMessages([...newMessages, { role: 'assistant', content: `Erreur de connexion: ${err.message}` }]);
+      setMessages([...newMessages, { role: 'assistant', content: `Erreur: ${err.message}` }]);
     }
     setLoading(false);
   };
 
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
   const clearChat = () => {
@@ -99,7 +94,6 @@ export default function App() {
     setShowMenu(false);
   };
 
-  // Suggérer les commandes slash
   const slashCommands = [
     { cmd: '/rule: ', desc: 'Ajouter une règle' },
     { cmd: '/rules', desc: 'Voir les règles' },
@@ -114,7 +108,6 @@ export default function App() {
 
   return (
     <div className="app">
-      {/* Header */}
       <header className="header">
         <div className="header-left">
           <div className="avatar">👻</div>
@@ -123,23 +116,22 @@ export default function App() {
             <span className="status">
               {loading ? 'écrit...' : 'en ligne'}
               {rulesCount > 0 && <span className="rules-badge"> {rulesCount} règle{rulesCount > 1 ? 's' : ''}</span>}
-              {rulesCount === 0 && <span className="free-badge"> SANS LIMITES</span>}
+              {rulesCount === 0 && <span className="free-badge"> FREE</span>}
             </span>
           </div>
         </div>
         <button className="menu-btn" onClick={() => setShowMenu(!showMenu)}>⋮</button>
       </header>
 
-      {/* Menu */}
       {showMenu && (
         <div className="menu-dropdown">
           <button onClick={() => { fetchRules(); setShowRules(true); setShowMenu(false); }}>📏 Règles ({rulesCount})</button>
+          <button onClick={() => { fetchScripts(); setShowTools(true); setShowMenu(false); }}>🔧 Tools & Scripts ({scripts.length})</button>
           <button onClick={() => { fetchMemory(); setShowMemory(true); setShowMenu(false); }}>🧠 Mémoire</button>
           <button onClick={clearChat}>🗑️ Effacer chat</button>
         </div>
       )}
 
-      {/* Rules panel */}
       {showRules && (
         <div className="overlay" onClick={() => setShowRules(false)}>
           <div className="modal-sheet" onClick={e => e.stopPropagation()}>
@@ -149,7 +141,7 @@ export default function App() {
             </div>
             <div className="modal-list">
               {rules.length === 0 ? (
-                <p className="empty">Aucune règle définie. L'agent est totalement libre.<br/><br/>Utilise <code>/rule: texte</code> dans le chat pour en ajouter.</p>
+                <p className="empty">Aucune règle. L'agent est libre.<br/>Utilise <code>/rule: texte</code> pour en ajouter.</p>
               ) : (
                 rules.map(r => (
                   <div key={r.id} className="list-item">
@@ -166,7 +158,34 @@ export default function App() {
         </div>
       )}
 
-      {/* Memory panel */}
+      {showTools && (
+        <div className="overlay" onClick={() => setShowTools(false)}>
+          <div className="modal-sheet" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>🔧 Tools & Scripts</h2>
+              <button onClick={() => setShowTools(false)}>✕</button>
+            </div>
+            <div className="modal-list">
+              <div className="list-item-title" style={{marginBottom: '8px'}}>Tools intégrés:</div>
+              <div className="list-item">
+                <div className="list-item-text">
+                  run_bash, read_file, write_file, list_files, web_search, run_script, list_scripts, install_package, github_tool, write_and_run
+                </div>
+              </div>
+              <div className="list-item-title" style={{marginTop: '12px', marginBottom: '8px'}}>Scripts:</div>
+              {scripts.map(s => (
+                <div key={s.file} className="list-item">
+                  <div>
+                    <div className="list-item-title">{s.name}</div>
+                    <div className="list-item-text">{s.description || s.file}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showMemory && (
         <div className="overlay" onClick={() => setShowMemory(false)}>
           <div className="modal-sheet" onClick={e => e.stopPropagation()}>
@@ -193,18 +212,17 @@ export default function App() {
         </div>
       )}
 
-      {/* Messages */}
       <div className="messages">
         {messages.length === 0 && (
           <div className="welcome">
             <div className="welcome-icon">👻</div>
             <h2>Salut Michael 👊</h2>
-            <p>Je suis là, sans limites. Qu'est-ce qu'on fait ?</p>
-            <p className="welcome-hint">Tape /help pour voir les commandes</p>
+            <p>Agent autonome — sans limites, avec tools et scripts.</p>
+            <p className="welcome-hint">Essaie: "liste mes repos GitHub" ou "infos système"</p>
           </div>
         )}
         {messages.map((msg, i) => (
-          <div key={i} className={`message ${msg.role} ${msg.content.startsWith('✅') || msg.content.startsWith('🗑️') || msg.content.startsWith('📋') || msg.content.startsWith('🔧') || msg.content.startsWith('🧠') ? 'system' : ''}`}>
+          <div key={i} className={`message ${msg.role}`}>
             <div className="message-content">
               {msg.content.split('\n').map((line, j) => (
                 <p key={j}>{line}</p>
@@ -222,7 +240,6 @@ export default function App() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Slash suggestions */}
       {showSlashSuggestions && (
         <div className="slash-suggestions">
           {slashCommands.filter(s => s.cmd.startsWith(input)).map(s => (
@@ -234,14 +251,13 @@ export default function App() {
         </div>
       )}
 
-      {/* Input bar */}
       <div className="input-bar">
         <textarea
           ref={inputRef}
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Écris ton message... ou /help"
+          placeholder="Demande quelque chose... ou /help"
           rows={1}
           disabled={loading}
         />
